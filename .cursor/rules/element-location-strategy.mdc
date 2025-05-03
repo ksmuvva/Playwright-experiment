@@ -1,0 +1,47 @@
+---
+description:
+globs:
+alwaysApply: false
+---
+# Element Location Strategy
+
+The MCP-Playwright integration uses a multi-layered approach to locating elements in web pages, with progressive fallback mechanisms to maximize success rates.
+
+## Location Strategies (In Order of Preference)
+
+1. **Direct Selectors**: Standard CSS and XPath selectors are tried first
+   - Example: `button:has-text('Submit')`, `#login-button`, `.submit-btn`
+   - See implementation in [exp_tools.py](mdc:exp_tools.py) `playwright_click`
+
+2. **Smart Click Strategies**: Text-based fuzzy matching with variations
+   - Tries multiple selector variations based on text content
+   - Handles common UI patterns and terminology variations
+   - See implementation in [exp_tools.py](mdc:exp_tools.py) `playwright_smart_click`
+
+3. **Accessibility Tree**: Uses the browser's accessibility API
+   - More resilient to DOM structure changes
+   - Works well with properly accessible websites
+   - See implementation in [exp_tools.py](mdc:exp_tools.py) `playwright_accessibility_locator`
+
+4. **Vision Locators**: Based on visible text content
+   - Uses Playwright's built-in text-based location methods
+   - Finds elements by their visible labels and content
+   - See implementation in [exp_tools.py](mdc:exp_tools.py) `playwright_vision_locator`
+
+5. **JavaScript Evaluation**: Deep DOM traversal via JavaScript
+   - Last resort when other methods fail
+   - Can find elements based on complex criteria
+   - See implementation in [exp_tools.py](mdc:exp_tools.py) `playwright_js_locate`
+
+## Multi-Strategy Approach
+
+The [exp_tools.py](mdc:exp_tools.py) `playwright_multi_strategy_locate` method combines all approaches into a unified strategy, while `playwright_auto_execute` serves as the primary entry point for all browser interactions, automatically selecting the most appropriate method based on the action type.
+
+For maximum reliability, use `playwright_auto_execute` instead of calling individual methods directly.
+
+## Error Recovery
+
+When an element cannot be found, the system:
+1. Captures detailed diagnostic information
+2. Takes screenshots for visual debugging
+3. Provides specific error messages to help identify the issue

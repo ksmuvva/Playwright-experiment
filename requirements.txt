@@ -1,0 +1,8 @@
+# Claude API client for LLM integration
+anthropic>=0.18.0
+
+# MCP SDK (Model Context Protocol)
+mcp>=1.7.0
+
+# Additional dependencies
+python-dotenv>=1.0.0
