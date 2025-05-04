@@ -12,12 +12,10 @@ import os
 import logging
 import tempfile
 import base64
-import traceback  # Add import for traceback module
 from typing import Any, Dict, List, Optional, Tuple, Union
 import argparse
 import time
 import re
-import subprocess
 
 import anthropic  # For Claude API integration
 from dotenv import load_dotenv
@@ -42,305 +40,22 @@ except ImportError:
 
 from mcp.server.stdio import stdio_server
 
-# Import tools from our modular structure
+# Import tools from separate module
 try:
-    from Tools import PlaywrightTools  # Main integrated tools class
-    from Tools.CodeGeneration.codegen import CodeGenSession  # Code generation session class
-    print("Successfully imported tools from modular Tools package")
+    from exp_tools import PlaywrightTools, CodeGenSession
+    print("Successfully imported tools from exp_tools.py")
 except Exception as e:
-    print(f"Error importing from Tools package: {e}")
-    print("Traceback:")
-    import traceback
-    traceback.print_exc()
-    
-    # Define placeholder classes as last resort
+    print(f"Error importing from exp_tools: {e}")
+    # Define empty placeholder classes as fallback
     class PlaywrightTools:
-        def __init__(self):
-            self.playwright = None
-            self.browser = None
-            self.context = None
-            self.pages = []
-            self.browser_initialized = False
-            self.active_page_index = 0
-            print("Using placeholder PlaywrightTools implementation")
-            
-        async def is_browser_alive(self):
-            """
-            Check if the browser is still responsive and available.
-            Returns True if the browser is alive, False otherwise.
-            """
-            if not self.browser:
-                print("Browser validation failed: Browser object doesn't exist")
-                self.browser_initialized = False
-                return False
-            
-            try:
-                # Attempt a simple operation to verify browser is responsive
-                try:
-                    # Check browser connection status - will throw if browser is closed
-                    version = await self.browser.version()
-                    print(f"Browser check succeeded: Browser version {version}")
-                    return True
-                except Exception as browser_error:
-                    print(f"Browser connection check failed: {browser_error}")
-                    # If we get here, the browser connection failed
-                    self.browser_initialized = False
-                    return False
-            except Exception as e:
-                print(f"Browser check failed with exception: {e}")
-                # Reset state since browser is no longer valid
-                self.browser_initialized = False
-                self.browser = None  # Clear the reference to release memory
-                return False
-            
         async def initialize(self):
-            """Initialize Playwright without launching a browser yet."""
-            try:
-                from playwright.async_api import async_playwright
-                self.playwright = await async_playwright().start()
-                print("✅ Playwright initialized")
-                return True
-            except Exception as e:
-                print(f"❌ Failed to initialize Playwright: {e}")
-                return False
-                
-        async def verify_browser_page(self, page_index=0):
-            """
-            Verify browser and page are alive, and recover if needed.
-            Returns tuple (browser_ok, page) where:
-            - browser_ok: True if browser is ready to use
-            - page: The page object if available, None otherwise
-            """
-            import traceback  # Import traceback module for error reporting
+            print("Using placeholder PlaywrightTools implementation")
+            return True
             
-            print(f"⏱️ Verifying browser and page state...")
-            
-            # First check browser existence and initialization state
-            if not self.browser_initialized or not self.browser:
-                print("📢 Browser not initialized or doesn't exist - initializing now")
-                browser_alive = False
-            else:
-                # Check if the existing browser is still alive
-                print("📢 Checking if existing browser is still responsive...")
-                browser_alive = await self.is_browser_alive()
-                
-                if not browser_alive:
-                    print("📢 Browser is not responsive - will reinitialize")
-                else:
-                    print("📢 Browser is responsive - proceeding with checks")
-            
-            # Initialize/reinitialize browser if needed
-            if not browser_alive:
-                # Browser needs initialization or recovery
-                try:
-                    # Initialize Playwright if not already initialized
-                    if not self.playwright:
-                        print("🚀 Starting Playwright...")
-                        from playwright.async_api import async_playwright
-                        self.playwright = await async_playwright().start()
-                    
-                    # Launch browser
-                    print("🚀 Launching browser...")
-                    self.browser = await self.playwright.chromium.launch(headless=False)
-                    
-                    # Create context with viewport
-                    viewport_size = {"width": 1280, "height": 720}
-                    self.context = await self.browser.new_context(
-                        viewport=viewport_size,
-                        accept_downloads=True
-                    )
-                    
-                    self.browser_initialized = True
-                    print("✅ Browser initialized successfully")
-                except Exception as e:
-                    print(f"❌ Failed to initialize browser: {e}")
-                    return False, None
-            
-            # Create or get page
-            page = None
-            try:
-                if len(self.pages) > page_index and self.pages[page_index]:
-                    page = self.pages[page_index]
-                else:
-                    # Create new page
-                    page = await self.context.new_page()
-                    # Make sure pages list is long enough
-                    while len(self.pages) <= page_index:
-                        self.pages.append(None)
-                    self.pages[page_index] = page
-            except Exception as e:
-                print(f"❌ Failed to get/create page: {e}")
-                return True, None  # Browser ok but page failed
-                
-            return True, page
-                
-        async def playwright_navigate(self, url, wait_until="load", timeout=30000):
-            """Navigate to a URL in the browser."""
-            try:
-                # Verify browser and page
-                browser_ok, page = await self.verify_browser_page()
-                if not browser_ok or not page:
-                    return {"status": "error", "message": "Failed to verify browser/page"}
-                
-                print(f"🌐 Navigating to: {url}")
-                # Perform the navigation
-                response = await page.goto(url, wait_until=wait_until, timeout=timeout)
-                
-                result = {
-                    "status": "success",
-                    "message": f"Successfully navigated to {url}",
-                    "title": await page.title(),
-                    "url": page.url
-                }
-                
-                # If response is available, add status info
-                if response:
-                    result["status_code"] = response.status
-                    result["status_text"] = response.status_text
-                
-                return result
-                
-            except Exception as e:
-                print(f"❌ Navigation failed: {e}")
-                return {"status": "error", "message": f"Navigation failed: {str(e)}"}
-                
-        async def playwright_click(self, selector):
-            """Click on an element specified by selector."""
-            try:
-                # Verify browser and page
-                browser_ok, page = await self.verify_browser_page()
-                if not browser_ok or not page:
-                    return {"status": "error", "message": "Failed to verify browser/page"}
-                
-                print(f"🖱️ Clicking element: {selector}")
-                await page.click(selector)
-                
-                return {
-                    "status": "success",
-                    "message": f"Successfully clicked on {selector}"
-                }
-                
-            except Exception as e:
-                print(f"❌ Click failed: {e}")
-                return {"status": "error", "message": f"Click failed: {str(e)}"}
-                
-        async def playwright_get_visible_text(self, selector=None):
-            """Extract visible text from the page or a specific element."""
-            try:
-                # Verify browser and page
-                browser_ok, page = await self.verify_browser_page()
-                if not browser_ok or not page:
-                    return {"status": "error", "message": "Failed to verify browser/page"}
-                
-                if selector:
-                    # Get text from specific element
-                    print(f"📄 Getting text from element: {selector}")
-                    element = await page.query_selector(selector)
-                    if not element:
-                        return {
-                            "status": "error", 
-                            "message": f"Element not found: {selector}"
-                        }
-                    
-                    text = await element.text_content()
-                    return {
-                        "status": "success",
-                        "message": f"Successfully extracted text from {selector}",
-                        "text": text.strip()
-                    }
-                else:
-                    # Get text from entire page body
-                    print("📄 Getting text from entire page")
-                    body = await page.query_selector("body")
-                    if not body:
-                        return {
-                            "status": "error",
-                            "message": "Could not find body element"
-                        }
-                    
-                    text = await body.text_content()
-                    return {
-                        "status": "success",
-                        "message": "Successfully extracted page text",
-                        "text": text.strip()
-                    }
-                    
-            except Exception as e:
-                print(f"❌ Text extraction failed: {e}")
-                return {"status": "error", "message": f"Text extraction failed: {str(e)}"}
-                
         async def cleanup(self):
-            """Cleanup resources but maintain browser persistence."""
-            try:
-                # Close all pages but keep the browser running
-                for page in self.pages:
-                    if page:
-                        try:
-                            await page.close()
-                        except Exception:
-                            pass
-                self.pages = []
-                self.active_page_index = 0
-                print("Cleaned up pages while preserving browser session")
-                return {"status": "success", "message": "Cleaned up browser resources"}
-            except Exception as e:
-                print(f"Failed to cleanup: {e}")
-                return {"status": "error", "message": str(e)}
+            # Empty cleanup method to avoid errors
+            pass
 
-        async def cleanup_all(self):
-            """
-            Clean up all resources including browser and playwright.
-            Ensures proper state tracking even if cleanup fails.
-            """
-            try:
-                # Close all pages
-                for page in self.pages:
-                    if page:
-                        try:
-                            await page.close()
-                        except Exception:
-                            pass
-                    
-                self.pages = []
-                
-                # Close browser context
-                if self.context:
-                    try:
-                        await self.context.close()
-                    except Exception:
-                        pass
-                    self.context = None
-                
-                # Close browser
-                if self.browser:
-                    try:
-                        await self.browser.close()
-                    except Exception:
-                        pass
-                    self.browser = None
-                
-                # Close playwright
-                if self.playwright:
-                    try:
-                        await self.playwright.stop()
-                    except Exception:
-                        pass
-                    self.playwright = None
-                    
-                # Always update state regardless of whether operations succeeded
-                self.browser_initialized = False
-                print("Fully cleaned up all browser resources")
-                return {"status": "success", "message": "Fully cleaned up all browser resources"}
-                
-            except Exception as e:
-                print(f"Error in cleanup_all: {e}")
-                # Still mark as not initialized even if cleanup failed
-                self.browser_initialized = False
-                self.browser = None
-                self.context = None
-                self.playwright = None
-                return {"status": "error", "message": str(e)}
-                
     class CodeGenSession:
         pass
 
@@ -726,12 +441,7 @@ class MCPClient:
                     plan_data = json.loads(cleaned_text)
                     if isinstance(plan_data, dict) and "tool_calls" in plan_data:
                         self.last_plan = plan_data["tool_calls"]
-                        self.plan_ready_for_execution = True  # Set flag to indicate plan is ready
                         logger.info(f"Parsed plan with {len(self.last_plan)} tool calls")
-                        
-                        # Log the plan details for debugging
-                        for i, tool_call in enumerate(self.last_plan):
-                            logger.info(f"  Tool call {i+1}: {tool_call.get('tool')}")
                         
                         # Return text content acknowledging the plan
                         return types.CreateMessageResult(
@@ -1018,37 +728,10 @@ class MCPClient:
                     # Call the tool and wait for it to complete
                     try:
                         print(f"   Executing {tool_name}...")
-                        
-                        # Visual progress indicator for long-running operations
-                        is_browser_operation = tool_name.startswith("playwright_") and tool_name not in ["playwright_debug_info", "playwright_get_visible_text"]
-                        progress_task = None
-                        
-                        if is_browser_operation:
-                            # Start a progress indicator for browser operations
-                            async def show_progress():
-                                symbols = ["⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷"]
-                                i = 0
-                                while True:
-                                    print(f"\r   {symbols[i]} Processing...", end="", flush=True)
-                                    i = (i + 1) % len(symbols)
-                                    await asyncio.sleep(0.2)
-                                
-                            progress_task = asyncio.create_task(show_progress())
-                        
-                        # Execute the tool
                         start_time = time.time()
                         result = await tool_method(**arguments)
                         end_time = time.time()
                         execution_time = round(end_time - start_time, 2)
-                        
-                        # Stop the progress indicator if it's running
-                        if progress_task:
-                            progress_task.cancel()
-                            try:
-                                await progress_task
-                            except asyncio.CancelledError:
-                                pass
-                            print("\r                          ", end="\r")  # Clear the progress indicator
                         
                         # Add to results
                         success = result.get("status") == "success"
@@ -1115,16 +798,50 @@ class MCPClient:
                     "results": results
                 }
                 
-            except json.JSONDecodeError as json_error:
-                logger.error(f"Failed to parse JSON: {json_error}")
-                return {"status": "error", "message": f"Failed to parse LLM response as JSON: {json_error}"}
+            except json.JSONDecodeError:
+                print(f"❌ Failed to parse LLM response as JSON: {raw_text}")
+                return {"status": "error", "message": "Failed to parse LLM response as JSON"}
+                
         except Exception as e:
             logger.error(f"Error processing natural language prompt: {e}")
             return {"status": "error", "message": str(e)}
 
+    async def close(self):
+        """Close the session and clean up resources."""
+        if self.session:
+            # Use the correct method to close the session
+            # Different versions of MCP might use different methods
+            try:
+                # Try aclose() first (newer versions)
+                await self.session.aclose()
+            except AttributeError:
+                # If that fails, try close() (older versions)
+                try:
+                    await self.session.close()
+                except AttributeError:
+                    # Last resort, try any other closing method or just pass
+                    if hasattr(self.session, '__aexit__'):
+                        await self.session.__aexit__(None, None, None)
+                    # If nothing works, at least set the session to None
+                    self.session = None
+            logger.info("Session closed")
+
+async def run_server():
+    """Run the MCP server in stdio mode."""
+    server = PlaywrightMCPServer()
+    started = await server.start()
+    if not started:
+        logger.error("Failed to start server. Exiting.")
+        return
+
+    try:
+        # Handle stdio server communication
+        await stdio_server(server.server)
+    finally:
+        await server.stop()
+
 async def run_integrated():
     """Run both client and server in the same process."""
-    server = None
     try:
         # Start server
         print("\n🚀 Starting AI-powered browser automation...\n")
@@ -1145,40 +862,13 @@ async def run_integrated():
         print("Example: 'Navigate to google.com and search for Playwright automation'")
         print("=============================================")
         
-        running = True
-        while running:
+        while True:
             try:
-                # Reset browser state flag before each command
-                # This ensures we'll do a fresh browser validation
-                if hasattr(server.tools_instance, "browser_initialized"):
-                    print("\n🔍 Checking browser health before new command...")
-                    # Explicitly verify browser is still working
-                    browser_alive = False
-                    try:
-                        if server.tools_instance.browser:
-                            browser_alive = await server.tools_instance.is_browser_alive()
-                        else:
-                            print("Browser object doesn't exist - will be initialized when needed")
-                    except Exception as e:
-                        print(f"Error checking browser health: {e}")
-                        browser_alive = False
-                        
-                    if not browser_alive and server.tools_instance.browser_initialized:
-                        print("⚠️ Browser has been closed - will be reinitialized automatically")
-                        # Reset all browser state to force reinitialization
-                        server.tools_instance.browser_initialized = False
-                        server.tools_instance.browser = None
-                        server.tools_instance.context = None
-                        server.tools_instance.pages = []
-                    elif browser_alive:
-                        print("✅ Browser is healthy and ready for commands")
-                        
                 user_input = input("\n>> Enter command: ").strip()
                 
                 if user_input.lower() in ["exit", "quit"]:
                     print("Exiting application...")
-                    running = False
-                    continue
+                    break
                 
                 if not user_input:
                     continue
@@ -1186,24 +876,358 @@ async def run_integrated():
                 print(f"\n🔍 Processing: \"{user_input}\"")
                 print("⏳ Generating automation plan...")
                 
-                # Execute the plan using the client
-                try:
-                    result = await client.process_natural_language(user_input, server)
-                    if result["status"] == "error":
-                        print(f"❌ Error: {result['message']}")
-                except Exception as plan_error:
-                    print(f"❌ Error processing command: {plan_error}")
-                    import traceback
-                    traceback.print_exc()
+                # Convert natural language to tool calls using LLM
+                if not client.llm_client:
+                    print("❌ LLM client not initialized. Can't process natural language.")
+                    print("   Make sure ANTHROPIC_API_KEY is set in your environment or .env file.")
+                    continue
+                    
+                # Get the actual available tools for dynamic system prompt
+                available_tools = [m for m in dir(server.tools_instance) 
+                                if callable(getattr(server.tools_instance, m)) 
+                                and not m.startswith('_')]
                 
+                # Create a dynamic system prompt with the exact available tools
+                dynamic_system_prompt = SYSTEM_PROMPT
+                
+                # Add a timestamp to force refresh of tool information
+                timestamp = int(time.time())
+                dynamic_system_prompt += f"\n\n## CURRENTLY AVAILABLE TOOLS (timestamp: {timestamp})\n"
+                
+                for tool in sorted(available_tools):
+                    if tool.startswith("playwright_"):
+                        # Get the docstring if available
+                        doc = getattr(server.tools_instance, tool).__doc__
+                        short_doc = doc.strip().split("\n")[0] if doc else f"Tool for {tool}"
+                        dynamic_system_prompt += f"- {tool} - {short_doc}\n"
+                    
+                response = await asyncio.to_thread(
+                    client.llm_client.messages.create,
+                    model=LLM_MODEL,
+                    max_tokens=MAX_TOKENS,
+                    system=dynamic_system_prompt,
+                    messages=[
+                        {"role": "user", "content": [{"type": "text", "text": user_input}]}
+                    ]
+                )
+                
+                # Process response
+                if not response.content or response.content[0].type != "text":
+                    print("❌ Invalid response from LLM")
+                    continue
+                
+                raw_text = response.content[0].text
+                
+                try:
+                    # Log the raw response for debugging
+                    print(f"Debug: Raw LLM response (first 100 chars): {raw_text[:100]}...")
+                    
+                    # Clean up the raw text by removing Markdown code block formatting if present
+                    cleaned_text = raw_text
+                    
+                    # If the text starts with ```json or ``` and ends with ```, remove those markers
+                    if cleaned_text.strip().startswith("```") and cleaned_text.strip().endswith("```"):
+                        # Remove the opening ```json or ``` line
+                        cleaned_text = re.sub(r'^```(?:json)?\s*\n', '', cleaned_text.strip())
+                        # Remove the closing ```
+                        cleaned_text = re.sub(r'\s*```\s*$', '', cleaned_text)
+                    
+                    # Handle case where LLM includes natural language before JSON
+                    if not cleaned_text.strip().startswith('{'):
+                        print("Detected natural language before JSON structure, attempting to extract JSON...")
+                        
+                        # First try to find a complete JSON object using regex
+                        json_pattern = r'(\{[\s\S]*"tool_calls"[\s\S]*\})'
+                        json_matches = re.findall(json_pattern, cleaned_text)
+                        
+                        if json_matches:
+                            # Use the first JSON structure found
+                            print(f"Extracted JSON object using regex")
+                            cleaned_text = json_matches[0]
+                        else:
+                            # Try to find JSON object by bracket matching
+                            start_idx = cleaned_text.find('{')
+                            if start_idx >= 0:
+                                # Find matching closing brace
+                                open_count = 1
+                                close_idx = -1
+                                
+                                for i in range(start_idx + 1, len(cleaned_text)):
+                                    if cleaned_text[i] == '{':
+                                        open_count += 1
+                                    elif cleaned_text[i] == '}':
+                                        open_count -= 1
+                                        if open_count == 0:
+                                            close_idx = i
+                                            break
+                                
+                                if close_idx > 0:
+                                    cleaned_text = cleaned_text[start_idx:close_idx+1]
+                                    print(f"Extracted JSON object using bracket matching")
+                    
+                    # Log the cleaned text for debugging
+                    print(f"Debug: Cleaned text for parsing (first 100 chars): {cleaned_text[:100]}...")
+                    
+                    try:
+                        # Parse JSON plan
+                        plan_data = json.loads(cleaned_text)
+                    except json.JSONDecodeError as e:
+                        print(f"JSON parsing error: {str(e)}")
+                        # Try one more attempt with a more aggressive approach
+                        # Look for the beginning of the tool_calls array
+                        tool_calls_idx = cleaned_text.find('"tool_calls"')
+                        if tool_calls_idx > 0:
+                            # Reconstruct a minimal valid JSON
+                            reconstructed_json = '{"tool_calls":' + cleaned_text[cleaned_text.find('[', tool_calls_idx):].split(']')[0] + ']}'
+                            print("Attempting to parse reconstructed JSON...")
+                            plan_data = json.loads(reconstructed_json)
+                    
+                    if not isinstance(plan_data, dict) or "tool_calls" not in plan_data:
+                        print(f"❌ Invalid plan format: {raw_text}")
+                        continue
+                    
+                    tool_calls = plan_data["tool_calls"]
+                    print(f"✅ Generated plan with {len(tool_calls)} steps")
+                    
+                    # Print the plan for review
+                    for i, tool_call in enumerate(tool_calls):
+                        print(f"   Step {i+1}: {tool_call.get('tool', 'unknown')}")
+                    
+                    # Execute each tool call sequentially
+                    results = []
+                    success_count = 0
+                    error_recovery_attempts = 0
+                    max_recovery_attempts = 2
+                    
+                    i = 0
+                    while i < len(tool_calls):
+                        tool_call = tool_calls[i]
+                        tool_name = tool_call.get("tool")
+                        arguments = tool_call.get("arguments", {})
+                        
+                        print(f"\n⚙️  Step {i+1}/{len(tool_calls)}: {tool_name}")
+                        print(f"   Parameters: {json.dumps(arguments, indent=2)}")
+                        
+                        # Get method from server's tools_instance
+                        tool_method = getattr(server.tools_instance, tool_name, None)
+                        
+                        # Try to recover from missing tools by finding similar tools
+                        if not tool_method:
+                            error_msg = f"Tool not found: {tool_name}"
+                            print(f"❌ {error_msg}")
+                            
+                            # Suggest a similar tool name if possible
+                            available_tools = [m for m in dir(server.tools_instance) 
+                                             if callable(getattr(server.tools_instance, m)) 
+                                             and not m.startswith('_')
+                                             and m.startswith('playwright_')]
+                            
+                            # Find the closest matching tool name
+                            closest_match = None
+                            min_distance = float('inf')
+                            
+                            for available_tool in available_tools:
+                                # Simple string distance calculation
+                                distance = sum(1 for a, b in zip(tool_name, available_tool) if a != b)
+                                distance += abs(len(tool_name) - len(available_tool))
+                                
+                                if distance < min_distance:
+                                    min_distance = distance
+                                    closest_match = available_tool
+                            
+                            # Automatic tool correction for known mistakes
+                            auto_corrections = {
+                                "playwright_type": "playwright_fill",
+                                "playwright_press": "playwright_press_key",
+                                "playwright_input": "playwright_fill",
+                                "playwright_search": "playwright_fill",
+                            }
+                            
+                            # Check if we can auto-correct this tool
+                            if tool_name in auto_corrections:
+                                correct_tool = auto_corrections[tool_name]
+                                print(f"🔄 Auto-correcting to {correct_tool}")
+                                
+                                # Update tool name and get the method
+                                tool_name = correct_tool
+                                tool_method = getattr(server.tools_instance, tool_name, None)
+                                
+                                # Update the tool call for result tracking
+                                tool_call["tool"] = tool_name
+                                
+                            elif closest_match and min_distance <= 5:  # Only suggest if reasonably close
+                                print(f"💡 Did you mean: {closest_match}?")
+                                
+                                # Auto-fallback if we have a very close match
+                                if min_distance <= 3 and error_recovery_attempts < max_recovery_attempts:
+                                    print(f"🔄 Auto-fallback to {closest_match}")
+                                    tool_name = closest_match
+                                    tool_method = getattr(server.tools_instance, closest_match, None)
+                                    
+                                    # Update the tool call for result tracking
+                                    tool_call["tool"] = tool_name
+                                    error_recovery_attempts += 1
+                                else:
+                                    # Try the auto_execute meta-tool as fallback for any action
+                                    action = tool_name.replace("playwright_", "")
+                                    target = arguments.get("selector", arguments.get("url", ""))
+                                    value = arguments.get("text", arguments.get("key", ""))
+                                    
+                                    if hasattr(server.tools_instance, "playwright_auto_execute"):
+                                        print(f"🔄 Falling back to playwright_auto_execute for {action}")
+                                        tool_method = getattr(server.tools_instance, "playwright_auto_execute")
+                                        arguments = {
+                                            "action": action,
+                                            "target": target,
+                                            "value": value,
+                                            "page_index": arguments.get("page_index", 0)
+                                        }
+                                        tool_name = "playwright_auto_execute"
+                                        tool_call["tool"] = tool_name
+                                    else:
+                                        print(f"   Available tools in server: {[m for m in dir(server.tools_instance) if callable(getattr(server.tools_instance, m)) and not m.startswith('_') and m.startswith('playwright_')]}")
+                            results.append({
+                                "tool": tool_name,
+                                "status": "failed",
+                                "error": error_msg
+                            })
+                            i += 1  # Move to next step
+                            continue
+                            
+                        # Call the tool and wait for it to complete
+                        try:
+                            print(f"   Executing {tool_name}...")
+                            start_time = time.time()
+                            result = await tool_method(**arguments)
+                            end_time = time.time()
+                            execution_time = round(end_time - start_time, 2)
+                            
+                            # Add to results
+                            success = result.get("status") == "success"
+                            results.append({
+                                "tool": tool_name,
+                                "status": "completed" if success else "failed",
+                                "execution_time": execution_time,
+                                "result": result
+                            })
+                            
+                            status_icon = "✅" if success else "❌"
+                            print(f"   {status_icon} {result.get('message', '')} (in {execution_time}s)")
+                            
+                            if success:
+                                success_count += 1
+                            # Wait a bit between actions to let the page settle
+                            if i < len(tool_calls) - 1:
+                                await asyncio.sleep(1.5)  # Slightly longer wait to ensure page is ready
+                            else:
+                                # If this tool failed, we might want to stop the sequence for critical operations
+                                print(f"⚠️  Warning: Step {i+1} failed: {result.get('error', result.get('message', 'Unknown error'))}")
+                                if tool_name == "playwright_navigate":
+                                    # Navigation is critical, ask if user wants to retry or continue
+                                    retry = input("   Navigation failed. Retry? (y/n): ").lower() == 'y'
+                                    if retry:
+                                        i -= 1  # Retry the same step
+                                        continue
+                                    # Continue with next steps anyway
+                        except Exception as tool_error:
+                            error_msg = str(tool_error)
+                            print(f"❌ Error executing {tool_name}: {error_msg}")
+                            results.append({
+                                "tool": tool_name,
+                                "status": "failed",
+                                "error": error_msg
+                            })
+                            # For critical errors in navigation, offer to retry
+                            if tool_name == "playwright_navigate":
+                                retry = input("   Critical error in navigation. Retry? (y/n): ").lower() == 'y'
+                                if retry:
+                                    i -= 1  # Retry the same step
+                        
+                        # Increment the loop counter to move to the next step
+                        i += 1
+                    
+                    # Print summary
+                    print("\n📋 Execution summary:")
+                    for i, result in enumerate(results):
+                        status = "✅" if result["status"] == "completed" else "❌"
+                        print(f"   {status} Step {i+1}: {result['tool']}")
+                    
+                    if success_count == 0:
+                        print("\n❌ All steps failed. Please check your command and try again.")
+                    elif success_count < len(tool_calls):
+                        print(f"\n⚠️ Some steps failed ({success_count}/{len(tool_calls)} succeeded). You may want to try again.")
+                    else:
+                        print("\n✅ All steps completed successfully!")
+                    
+                    print("\nReady for next command...")
+                    
+                except json.JSONDecodeError as e:
+                    # Provide more detailed error information
+                    print(f"❌ Failed to parse LLM response as JSON: {str(e)}")
+                    print(f"❌ First 150 characters of raw response: {raw_text[:150]}...")
+                    
+                    # Try to force the model to output proper JSON in the next attempt
+                    retry = input("   Would you like to retry with stronger instructions to output JSON only? (y/n): ").lower() == 'y'
+                    if retry:
+                        # Add stronger instructions to output JSON only
+                        enhanced_prompt = f"Please respond with JSON only, no explanations or text outside the JSON structure. The JSON must have a 'tool_calls' array. Original request: {user_input}"
+                        print("\n⏳ Retrying with enhanced instructions...")
+                        
+                        try:
+                            # Use a modified system prompt that strongly emphasizes JSON-only output
+                            enhanced_system_prompt = dynamic_system_prompt + "\n\nCRITICAL: YOU MUST RESPOND WITH PURE JSON ONLY. NO TEXT BEFORE OR AFTER THE JSON STRUCTURE. DO NOT EXPLAIN WHAT YOU ARE DOING."
+                            retry_response = await asyncio.to_thread(
+                                client.llm_client.messages.create,
+                                model=LLM_MODEL,
+                                max_tokens=MAX_TOKENS,
+                                system=enhanced_system_prompt,
+                                messages=[
+                                    {"role": "user", "content": [{"type": "text", "text": enhanced_prompt}]}
+                                ]
+                            )
+                            
+                            if not retry_response.content or retry_response.content[0].type != "text":
+                                print("❌ Invalid response from retry attempt")
+                                continue
+                                
+                            retry_raw_text = retry_response.content[0].text
+                            print(f"Debug: Retry raw response (first 100 chars): {retry_raw_text[:100]}...")
+                            
+                            # Process the retry response with the same JSON extraction logic
+                            retry_cleaned_text = retry_raw_text
+                            
+                            # Extract JSON content
+                            if retry_cleaned_text.strip().startswith("```") and retry_cleaned_text.strip().endswith("```"):
+                                retry_cleaned_text = re.sub(r'^```(?:json)?\s*\n', '', retry_cleaned_text.strip())
+                                retry_cleaned_text = re.sub(r'\s*```\s*$', '', retry_cleaned_text)
+                                
+                            # Try to parse the retry response
+                            plan_data = json.loads(retry_cleaned_text)
+                            
+                            if not isinstance(plan_data, dict) or "tool_calls" not in plan_data:
+                                print(f"❌ Invalid plan format from retry")
+                                continue
+                                
+                            print("✅ Successfully parsed JSON from retry attempt")
+                            tool_calls = plan_data["tool_calls"]
+                            print(f"✅ Generated plan with {len(tool_calls)} steps")
+                            
+                            # Continue with execution...
+                        except Exception as retry_error:
+                            print(f"❌ Retry attempt also failed: {str(retry_error)}")
+                            continue
+                    else:
+                        # Skip this command without retry
+                        continue
+                except Exception as e:
+                    print(f"❌ Error executing plan: {e}")
+                    continue
+                    
             except KeyboardInterrupt:
                 print("\n⚠️ Interrupted by user")
-                running = False
+                break
             except Exception as e:
                 print(f"❌ Error: {e}")
-                # Reset browser state on unhandled errors
-                if hasattr(server.tools_instance, "browser_initialized"):
-                    server.tools_instance.browser_initialized = False
     
     except ModuleNotFoundError as e:
         print(f"❌ Missing required module: {e}")
@@ -1216,13 +1240,10 @@ async def run_integrated():
         traceback.print_exc()
     finally:
         # Close server if it was initialized
-        if server:
+        if 'server' in locals() and server:
             print("\n🛑 Stopping server...")
-            try:
-                await server.stop()
-                print("✅ Server fully stopped")
-            except Exception as stop_error:
-                print(f"❌ Error stopping server: {stop_error}")
+            await server.stop()
+            print("✅ Server stopped")
         print("Exiting integrated mode.")
 
 async def main():
@@ -1313,3 +1334,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nExiting...")
+
