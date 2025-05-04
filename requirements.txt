@@ -6,3 +6,8 @@ mcp>=1.7.0
 
 # Additional dependencies
 python-dotenv>=1.0.0
+
+requests>=2.25.1
+
+playwright>=1.0.0
+
